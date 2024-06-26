@@ -1867,8 +1867,9 @@ class BalsaAgent(object):
             self.LogScalars(to_log)
         self.SaveBestPlans(iter)
 
-        # Run Conformal Prediction
-        stop_training = self.RunConformalPrediction()
+        if(p.run_conformal_prediction):
+            # Run Conformal Prediction
+            stop_training = self.RunConformalPrediction()
 
         if (self.curr_value_iter + 1) % 5 == 0:
             self.SaveAgent(model, iter_total_latency)
@@ -2176,12 +2177,13 @@ def Main(argv):
 
     p.use_local_execution = FLAGS.local
     # Override params here for quick debugging.
-    # p.sim_checkpoint = None
-    # p.epochs = 1
+    p.sim_checkpoint = None
+    p.epochs = 1
     p.val_iters = 10
-    # p.query_glob = ['7*.sql']
-    # p.test_query_glob = ['7c.sql']
-    # p.search_until_n_complete_plans = 1
+    p.query_glob = ['7*.sql']
+    p.test_query_glob = ['7c.sql']
+    p.search_until_n_complete_plans = 1
+    p["run_conformal_prediction"] = False
 
     agent = BalsaAgent(p)
     agent.Run()
