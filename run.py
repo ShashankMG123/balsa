@@ -2183,7 +2183,7 @@ def Main(argv):
     p.query_glob = ['7*.sql']
     p.test_query_glob = ['7c.sql']
     p.search_until_n_complete_plans = 1
-    p["run_conformal_prediction"] = False
+    p.run_conformal_prediction = False
 
     agent = BalsaAgent(p)
     agent.Run()

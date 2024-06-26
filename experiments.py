@@ -274,6 +274,10 @@ class BalsaParams(object):
             'Keep doing plan search for each query until this many complete'\
             ' plans have been found.  Returns the predicted cheapest one out'\
             ' of them.  Recommended: 10.')
+        p.Define(
+            'run_conformal_prediction', False,
+            'Bool to indicate if conformal prediction should be used'
+        )
         p.Define('planner_config', None, 'See optimizer.py#PlannerConfig.')
         p.Define(
             'avoid_eq_filters', False,
