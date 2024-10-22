@@ -243,7 +243,6 @@ class DynamicProgramming(object):
                                query_leaves, dp_tables):
         p = self.params
         num_rels = len(query_leaves)
-
         for level in range(2, num_rels + 1):
             dp_table = dp_tables[level]
             for level_i in range(1, level):
@@ -296,7 +295,6 @@ class DynamicProgramming(object):
                     cost, plan = tup[0], tup[1]
                     for hook in self.on_enumerated_hooks:
                         hook(plan, cost)
-
         return list(dp_tables[num_rels].values())[0][1], dp_tables
 
     def _dp_dbmsx_search_space(self, original_node, join_graph, all_join_conds,

@@ -23,6 +23,9 @@ from balsa.models import treeconv
 from balsa.util import dataset as ds
 from balsa.util import plans_lib
 
+import pdb
+import pickle
+
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
@@ -486,6 +489,8 @@ class Optimizer(object):
         is_eps_greedy_triggered = False
 
         terminal_states = []
+        counter = 0
+        fringe_json = {}
         while len(terminal_states) < self.search_until_n_complete_plans and \
               fringe:
             state_cost, state = fringe.pop(0)
@@ -504,6 +509,8 @@ class Optimizer(object):
                 avoid_eq_filters=avoid_eq_filters)
             costs = self.infer(query_node,
                                [join for join, _, _ in possible_plans])
+            #Check this point
+            # Filters out the possible_plans
             valid_costs, valid_new_states = self._make_new_states(
                 state, costs, possible_plans)
 
@@ -542,6 +549,15 @@ class Optimizer(object):
 
             fringe = sorted(fringe, key=lambda x: x[0])
             fringe = fringe[:beam_size]
+            counter += 1 
+            fringe_json[counter] = fringe
+
+            # TODO: Online Verification
+            # Our targets are in the fringe and with the shape of (valid_cost, new_state)
+
+        queryName = str(query_node.info["query_name"])
+        # with open(f"/users/smgiridh/balsa/onlineVerificationData/{queryName}.pkl", "wb") as f:
+        #     pickle.dump(fringe_json, f)
 
         planning_time = (time.time() - planning_start_t) * 1e3
         print('Planning took {:.1f}ms'.format(planning_time))

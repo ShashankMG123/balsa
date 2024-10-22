@@ -290,7 +290,10 @@ class Node(object):
             # PG uses the former & the extension expects the latter.
             node_type = node_type.replace('NestedLoop', 'NestLoop')
             if t.IsScan():
-                scans.append(node_type + '(' + t.table_alias + ')')
+                if t.table_alias is  None:
+                    print('debug Scan!!! table_alias is None')
+                else:
+                    scans.append(node_type + '(' + t.table_alias + ')')
                 return [t.table_alias], t.table_alias
             rels = []  # Flattened
             leading = []  # Hierarchical
@@ -546,8 +549,13 @@ def FilterScansOrJoins(nodes):
 
     def _filter(node):
         if not node.IsScan() and not node.IsJoin():
-            assert len(node.children) == 1, node
-            return _filter(node.children[0])
+            try:
+                assert len(node.children) == 1, node
+                return _filter(node.children[0])
+            except Exception as e:
+                breakpoint()
+                print(e)
+        
         node.children = [_filter(c) for c in node.children]
         return node
 

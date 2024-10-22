@@ -26,7 +26,6 @@ import numpy as np
 from balsa.models import treeconv
 from balsa.util import graphs, plans_lib, postgres
 
-
 def TreeConvFeaturize(plan_featurizer, subplans):
     """Returns (featurized plans, tree conv indexes) tensors."""
     assert len(subplans) > 0

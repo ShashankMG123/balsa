@@ -33,6 +33,10 @@ RAND_52_TEST_QUERIES = [
     '22b.sql', '17c.sql', '24b.sql', '10a.sql', '22c.sql'
 ]
 
+RAND_52_TEST_QUERIES_TPCH = [
+    '10a.sql', '10b.sql', '10c.sql', '10d.sql', '10e.sql', 
+    '10f.sql', '10g.sql', '10h.sql', '10i.sql', '10j.sql']
+
 LR_SCHEDULES = {
     'C': {
         'lr_piecewise': [
@@ -118,6 +122,7 @@ class BalsaParams(object):
         p.Define('bs', 1024, 'Batch size.')
         p.Define('val_iters', 500, '# of value iterations.')
         p.Define('should_run_cp', False, 'Should run conformal prediction or not.')
+        p.Define('eval_mode', False, 'Run in eval mode, only for CP online prediction.')
         p.Define('increment_iter_despite_timeouts', False,
                  'Increment the iteration counter even if timeouts occurred?')
         p.Define('loss_type', None, 'Options: None (MSE), mean_qerror.')
@@ -338,6 +343,7 @@ class Baseline(BalsaParams):
     def Params(self):
         p = super().Params()
         p.run_baseline = True
+        p.db = "tpch"
         return p
 
 
@@ -602,6 +608,23 @@ class NeoImplRand52(BalsaParams):
         p.skip_training_on_timeouts = True
 
         return p
+    
+# Genral TPCH workload 
+@balsa.params_registry.Register  # keep
+class Balsa_JOBRandSplit_TPCH10(Rand52MinCardCostOnPolLrC):
+
+    def Params(self):
+        p = super().Params()
+        p.increment_iter_despite_timeouts = True
+        p = p.Set(**LR_SCHEDULES['C10'])
+        p.db = 'tpch'
+        #p.init_experience = 'data/TPCH/initial_policy_data.pkl'
+        
+        p.test_query_glob = RAND_52_TEST_QUERIES_TPCH
+        #p.sim_checkpoint = 'checkpoints/TPCH/epoch=20.ckpt'
+        p.query_dir = 'queries/sample_queries_tpch'
+                
+        return p
 
 
 @balsa.params_registry.Register
@@ -646,7 +669,6 @@ class JOBRandSplit_NoSim(Balsa_JOBRandSplit):
         p.sim = False
         p.sim_checkpoint = None
         return p
-
 
 @balsa.params_registry.Register  # keep
 class JOBRandSplit_PostgresSim(Balsa_JOBRandSplit):

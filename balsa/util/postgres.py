@@ -174,7 +174,6 @@ def GetLatencyFromPg(sql, hint, verbose=False, check_hint_used=False):
                               verbose=True,
                               geqo_off=geqo_off,
                               cursor=cursor).result
-
     json_dict = result[0][0][0]
     latency = float(json_dict['Execution Time'])
     node0 = ParsePostgresPlanJson(json_dict)
@@ -210,7 +209,7 @@ def _run_explain(explain_str,
     cluster manager, which will release the server after timeout expires.
     """
     # if is_test:
-    #     assert remote, "testing queries must run on remote Postgres servers"
+    #     assert remote, "testing queries must run on remote Postgres servers"    
     if cursor is None and not remote:
         with pg_executor.Cursor() as cursor:
             return _run_explain(explain_str, sql, comment, verbose, geqo_off,
@@ -244,10 +243,12 @@ def _run_explain(explain_str,
 
     if remote:
         assert cursor is None
-        return pg_executor.ExecuteRemote(s, verbose, geqo_off, timeout_ms)
-    else:
-        return pg_executor.Execute(s, verbose, geqo_off, timeout_ms, cursor)
+        temp = pg_executor.ExecuteRemote(s, verbose, geqo_off, timeout_ms)
 
+    else:
+        temp =  pg_executor.Execute(s, verbose, geqo_off, timeout_ms, cursor)
+
+    return temp
 
 def _FilterExprsByAlias(exprs, table_alias):
     # Look for <table_alias>.<stuff>.
@@ -280,9 +281,13 @@ def ParsePostgresPlanJson(json_dict):
 
         # Unary predicate on a table.
         if 'Filter' in json_dict:
-            assert 'Scan' in op, json_dict
-            assert 'Relation Name' in json_dict, json_dict
-            curr_node.info['filter'] = json_dict['Filter']
+            try:
+                assert 'Scan' in op, json_dict
+                assert 'Relation Name' in json_dict, json_dict
+                curr_node.info['filter'] = json_dict['Filter']
+            except Exception as e:
+                breakpoint()
+                print(e)
 
         if 'Scan' in op and select_exprs:
             # Record select exprs that belong to this leaf.
@@ -320,16 +325,20 @@ def EstimateFilterRows(nodes):
         nodes = [nodes]
     cache = {}
     with pg_executor.Cursor() as cursor:
-        for node in nodes:
-            for table_id, pred in node.info['all_filters'].items():
-                key = (table_id, pred)
-                if key not in cache:
-                    sql = 'EXPLAIN(format json) SELECT * FROM {} WHERE {};'.format(
-                        table_id, pred)
-                    cursor.execute(sql)
-                    json_dict = cursor.fetchall()[0][0][0]
-                    num_rows = json_dict['Plan']['Plan Rows']
-                    cache[key] = num_rows
+        try:
+            for node in nodes:
+                for table_id, pred in node.info['all_filters'].items():
+                    key = (table_id, pred)
+                    if key not in cache:
+                        sql = 'EXPLAIN(format json) SELECT * FROM {} WHERE {};'.format(
+                            table_id, pred)
+                        cursor.execute(sql)
+                        json_dict = cursor.fetchall()[0][0][0]
+                        num_rows = json_dict['Plan']['Plan Rows']
+                        cache[key] = num_rows
+        except Exception as e:
+            breakpoint()
+            print(e)
     print('{} unique filters'.format(len(cache)))
     pprint.pprint(cache)
     for node in nodes:

@@ -30,8 +30,10 @@ LOCAL_DSN = "host=/tmp dbname=imdbload"
 REMOTE_DSN = "postgres://psycopg:psycopg@localhost/imdbload"
 
 # TPC-H.
-# LOCAL_DSN = "postgres://psycopg:psycopg@localhost/tpch-sf10"
-# REMOTE_DSN = "postgres://psycopg:psycopg@localhost/tpch-sf10"
+# LOCAL_DSN = "postgres://psycopg:psycopg@localhost/tpch"
+# REMOTE_DSN = "postgres://psycopg:psycopg@localhost/tpch"
+# LOCAL_DSN = "host=/tmp dbname=tpch"
+# REMOTE_DSN = "postgres://psycopg:psycopg@localhost/tpch"
 
 # A simple class holding an execution result.
 #   result: a list, outputs from cursor.fetchall().  E.g., the textual outputs

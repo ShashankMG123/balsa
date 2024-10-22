@@ -75,7 +75,19 @@ flags.DEFINE_string('run', 'Balsa_JOBRandSplit', 'Experiment config to run.')
 flags.DEFINE_boolean('local', False,
                      'Whether to use local engine for query execution.')
 
+def updateCheckpointAndReadMetadata(pt_path):
+    metadata_file = pt_path.replace("checkpoint.pt", "checkpoint-metadata.txt")
 
+    if os.path.exists(metadata_file):
+        with open(metadata_file, 'r') as file:
+            content = file.read().strip()
+            if content.startswith("value_iter,"):
+                previous_iteration = int(content.split(",")[1].strip())
+                return previous_iteration
+            else:
+                raise ValueError("Value_iter inconsistent")
+    else:
+        raise FileNotFoundError(f"Metadata file not found {metadata_file}")
 def GetDevice():
     return 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -166,6 +178,8 @@ def ExecuteSql(query_name,
 
     assert engine in ('postgres', 'dbmsx'), engine
     if engine == 'postgres':
+        # if curr_timeout_ms is None or curr_timeout_ms > 512000:
+        #     curr_timeout_ms = 51200
         return postgres.ExplainAnalyzeSql(sql_str,
                                           comment=hint_str,
                                           verbose=False,
@@ -217,6 +231,16 @@ def HintStr(node, with_physical_hints, engine):
     assert engine == 'dbmsx', engine
     return DbmsxNodeToHintStr(node, with_physical_hints=with_physical_hints)
 
+def get_actual_runtime(plan, indent=0):
+    indent_str = '  ' * indent
+    nodeType = plan['Node Type']
+    print(f"{indent_str} {nodeType}", end=" ")
+    print(f"Actual Total Time: {plan.get('Actual Total Time', 'N/A')}")
+
+    # Recursively print subplans, if any
+    if 'Plans' in plan:
+        for subplan in plan['Plans']:
+            get_actual_runtime(subplan, indent + 1)
 
 def ParseExecutionResult(result_tup,
                          query_name,
@@ -239,6 +263,7 @@ def ParseExecutionResult(result_tup,
     result = result_tup.result
     has_timeout = result_tup.has_timeout
     server_ip = result_tup.server_ip
+    json_dict = {}
     if has_timeout:
         assert not result, result
     if engine == 'dbmsx':
@@ -249,6 +274,11 @@ def ParseExecutionResult(result_tup,
         else:
             json_dict = result[0][0][0]
             real_cost = json_dict['Execution Time']
+    
+    if(json_dict):
+        print(f"Actual run time for {query_name}")
+        get_actual_runtime(json_dict["Plan"])
+
     if hint_str is not None:
         # Check that the hint has been respected.  No need to check if running
         # baseline.
@@ -277,8 +307,8 @@ def ParseExecutionResult(result_tup,
                 assert False, msg
             except Exception as e:
                 print(e, flush=True)
-                import ipdb
-                ipdb.set_trace()
+                #import ipdb
+                #ipdb.set_trace()
 
     if not silent:
         messages.append('{}Running {}: hinted plan\n{}'.format(
@@ -1007,6 +1037,46 @@ class BalsaAgent(object):
                          self.curr_value_iter))
         self.LogScalars(data)
 
+    def LoadFixedModel(self, train_from_scratch=False):
+        p = self.params
+        train_ds, train_loader, _, val_loader = self._MakeDatasetAndLoader(
+            log=not train_from_scratch)
+
+        plans_dataset = train_ds.dataset if isinstance(
+            train_ds, torch.utils.data.Subset) else train_ds
+
+        # Direct load the model without branching
+        # I follow the Balsa's orginal code style - mixing these `model`
+        model = MakeModel(p, self.exp, plans_dataset)
+        # Wrap it to get pytorch_lightning niceness.
+        model = BalsaModel(
+            p,
+            model,
+            loss_type=p.loss_type,
+            torch_invert_cost=plans_dataset.TorchInvertCost,
+            query_featurizer=self.exp.query_featurizer,
+            perturb_query_features=p.perturb_query_features,
+            l2_lambda=p.l2_lambda,
+            learning_rate=self.lr_schedule.Get()
+            if self.adaptive_lr_schedule is None else
+            self.adaptive_lr_schedule.Get(),
+            optimizer_state_dict=self.prev_optimizer_state_dict,
+            reduce_lr_within_val_iter=p.reduce_lr_within_val_iter)
+        print('iter', self.curr_value_iter, 'lr', model.learning_rate)
+
+        ckpt = torch.load(p.agent_checkpoint, map_location=lambda storage, loc: storage)
+        model.load_state_dict(ckpt)
+        #previous_iteration = updateCheckpointAndReadMetadata(p.agent_checkpoint) + 1
+        #print('Previous already execute {} iters'.format(previous_iteration))
+
+        self.model = model.model
+        print('Loaded value network checkpoint at iter', self.curr_value_iter)
+        ReportModel(model)
+
+        model = self._MakeModel(plans_dataset, train_from_scratch)
+
+        return model, plans_dataset
+    
     def _MakeModel(self, dataset, train_from_scratch=False):
         p = self.params
         if not hasattr(self, 'model') or p.skip_sim_init_iter_1p:
@@ -1059,7 +1129,12 @@ class BalsaAgent(object):
         if p.agent_checkpoint is not None and self.curr_value_iter == 0:
             ckpt = torch.load(p.agent_checkpoint,
                               map_location=lambda storage, loc: storage)
-            model.load_state_dict(ckpt['state_dict'])
+            #model.load_state_dict(ckpt['state_dict'])
+
+            model.load_state_dict(ckpt)
+            # previous_iteration = updateCheckpointAndReadMetadata(p.agent_checkpoint)+1
+            # print('Previous already execute {} iters'.format(previous_iteration))
+
             self.model = model.model
             print('Loaded value network checkpoint at iter',
                   self.curr_value_iter)
@@ -1247,6 +1322,8 @@ class BalsaAgent(object):
             # This condition only affects the first ever call to Train().
             # Iteration 0 doesn't have a timeout limit, so during the second
             # call to Train() we would always have self.curr_value_iter == 1.
+
+            # Comment this to keep model fixed
             trainer.fit(model, train_loader, val_loader)
             self.model = model.model
             # Optimizer state dict now available.
@@ -1830,7 +1907,10 @@ class BalsaAgent(object):
         p = self.params
         self.curr_iter_skipped_queries = 0
         # Train the model.
-        model, dataset = self.Train()
+        if p.eval_mode:
+            model, dataset = self.LoadFixedModel()
+        else:
+            model, dataset = self.Train()
         # Replay buffer reset (if enabled).
         if self.curr_value_iter == p.replay_buffer_reset_at_iter:
             self.exp.DropAgentExperience()
@@ -2003,15 +2083,12 @@ class BalsaAgent(object):
         # Model weights can be reloaded with:
         #   model = TheModelClass(*args, **kwargs)
         #   model.load_state_dict(torch.load(PATH))
-        ckpt_path = os.path.join(self.wandb_logger.experiment.dir,
-                                 'checkpoint.pt')
+        ckpt_path = os.path.join(self.wandb_logger.experiment.dir, 'checkpoint_{}.pt'.format(self.curr_value_iter))
         torch.save(model.state_dict(), ckpt_path)
         SaveText(
-            'value_iter,{}'.format(self.curr_value_iter),
-            os.path.join(self.wandb_logger.experiment.dir,
-                         'checkpoint-metadata.txt'))
-        print('Saved iter={} checkpoint to: {}'.format(self.curr_value_iter,
-                                                       ckpt_path))
+            'value_iter, {}'.format(self.curr_value_iter),
+            os.path.join(self.wandb_logger.experiment.dir, 'checkpoint-metadata.txt'))
+        print('Saved iter={} checkpoint to: {}'.format(self.curr_value_iter, ckpt_path))
 
         # Replay buffer.  Saved under data/.
         self._SaveReplayBuffer(iter_total_latency)
@@ -2134,7 +2211,7 @@ class BalsaAgent(object):
         while self.curr_value_iter < p.val_iters:
             has_timeouts, stop_training = self.RunOneIter(self.curr_value_iter)
 
-            self.LogTimings()
+            # self.LogTimings()
 
             if stop_training:
                 print("Conformal prediction made the decision to stop training")
@@ -2179,14 +2256,40 @@ def Main(argv):
     p = balsa.params_registry.Get(name)
 
     p.use_local_execution = FLAGS.local
-    # Override params here for quick debugging.
-    # p.sim_checkpoint = None
-    # p.epochs = 1
+    # Override params here for quick debugging.    
+    p.sim_checkpoint = None
+    # p.sim_checkpoint = "/users/smgiridh/balsa/tensorboard_logs_balsa/48_rf3iw7qj/checkpoints/epoch=99_v6.ckpt"
+    # p.agent_checkpoint = "/users/smgiridh/balsa/wandb/FinalRunImp/files/checkpoint.pt"
+    p.epochs = 100
     # p.should_run_cp = False
-    p.val_iters = 10
-    # p.query_glob = ['7*.sql']
-    # p.test_query_glob = ['7c.sql']
-    # p.search_until_n_complete_plans = 1
+    p.val_iters = 100
+    # p.query_glob = ["7*.sql"]
+    # p.test_query_glob = ["7a.sql","7b.sql"]
+    #p.search_until_n_complete_plans = 1
+
+    #p.epochs = 100
+    #p.val_iters = 50
+    #p.initial_timeout_ms = 6000
+    #p.eval_mode = True
+
+    #p.db = "tpch"
+    p.query_dir = "queries/join-order-benchmark"
+    p.query_glob = ["*.sql"]
+    p.test_query_glob = ['33b.sql','21b.sql','14b.sql','16a.sql','15b.sql','19c.sql',
+           '3c.sql','12c.sql','4a.sql','17c.sql','15d.sql','32a.sql','6d.sql',
+           '9d.sql','29c.sql','14c.sql','8c.sql','3b.sql','14a.sql','26c.sql',
+           '24b.sql','11c.sql','10a.sql','27a.sql','19b.sql','6a.sql','7c.sql',
+           '22d.sql','30c.sql','6b.sql','12a.sql','1b.sql','5a.sql','6c.sql',
+           '25c.sql','17d.sql','8d.sql','11b.sql','7a.sql','13a.sql', '16c.sql',
+           '30b.sql','15c.sql','13c.sql','20c.sql','11d.sql','15a.sql','25a.sql','19a.sql','23b.sql']
+    #p.test_query_glob = ['3*.sql', '5*.sql', '7*.sql', '8*.sql', '10*.sql', '12*.sql', '13*.sql']
+
+    #p.init_experience = "/users/smgiridh/balsa/data/initial_policy_data_tpch.pkl"
+    #p.sim_checkpoint = "/users/smgiridh/balsa/tensorboard_logs_balsa/139_kdm9d3k9/checkpoints/epoch=4.ckpt"
+    #p.agent_checkpoint = "/users/smgiridh/balsa/wandb/tpch-50/files/checkpoint_49.pt"
+
+    #p.test_query_glob = ["3a.sql"]
+    #p.test_query_glob = ['query_102.sql', 'query_87.sql', 'query_77.sql', 'query_199.sql', 'query_105.sql', 'query_188.sql', 'query_99.sql', 'query_41.sql', 'query_156.sql', 'query_160.sql', 'query_137.sql', 'query_121.sql', 'query_5.sql', 'query_10.sql', 'query_56.sql',  'query_114.sql', 'query_76.sql', 'query_92.sql', 'query_23.sql', 'query_27.sql',  'query_58.sql', 'query_53.sql', 'query_175.sql', 'query_43.sql', 'query_104.sql',  'query_127.sql', 'query_48.sql', 'query_184.sql', 'query_158.sql', 'query_131.sql',  'query_86.sql', 'query_178.sql', 'query_180.sql', 'query_109.sql', 'query_8.sql',  'query_44.sql', 'query_94.sql', 'query_18.sql', 'query_133.sql', 'query_154.sql',  'query_29.sql', 'query_33.sql', 'query_197.sql', 'query_64.sql', 'query_65.sql',  'query_34.sql', 'query_62.sql', 'query_167.sql', 'query_117.sql', 'query_129.sql',  'query_193.sql', 'query_66.sql', 'query_72.sql', 'query_144.sql', 'query_81.sql',  'query_128.sql', 'query_123.sql', 'query_108.sql', 'query_37.sql', 'query_101.sql',  'query_11.sql', 'query_194.sql', 'query_84.sql', 'query_85.sql', 'query_186.sql',  'query_80.sql', 'query_147.sql', 'query_73.sql', 'query_6.sql', 'query_95.sql',  'query_115.sql', 'query_181.sql', 'query_164.sql', 'query_196.sql', 'query_159.sql',  'query_91.sql', 'query_138.sql', 'query_111.sql', 'query_136.sql', 'query_9.sql',  'query_192.sql', 'query_152.sql', 'query_49.sql', 'query_195.sql', 'query_120.sql',  'query_68.sql', 'query_112.sql', 'query_13.sql', 'query_135.sql', 'query_83.sql',  'query_169.sql', 'query_46.sql', 'query_78.sql', 'query_176.sql', 'query_132.sql',  'query_163.sql', 'query_32.sql', 'query_35.sql', 'query_150.sql', 'query_126.sql']
 
     agent = BalsaAgent(p)
     agent.Run()
